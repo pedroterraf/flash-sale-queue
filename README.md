@@ -96,7 +96,7 @@ NestJS · TypeScript · Redis (ioredis) · JWT · [opossum](https://github.com/n
 ## Project layout
 
 ```
-backend/     NestJS API — queue, checkout, inventory, circuit breaker, stats
-frontend/    Next.js demo UI — join flow, live stats panel, chaos toggle
-load-test/   Standalone Node load-test harness + real captured results (above)
+backend/     NestJS API — queue, checkout, inventory, circuit breaker, stats     (see backend/README.md)
+frontend/    Next.js demo UI — join flow, live stats panel, chaos toggle         (see frontend/README.md)
+load-test/   Standalone Node load-test harness + real captured results (above)  (see load-test/README.md)
 ```
