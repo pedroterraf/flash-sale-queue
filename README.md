@@ -13,6 +13,10 @@ cd frontend && npm install && npm run dev   # Next.js UI on :3000
 
 Open two browser tabs on `http://localhost:3000` and hit **Join queue** on both — watch the position counter, then flip **Simulate downstream outage** and watch the circuit-breaker badge trip open and recover on its own a few seconds later.
 
+### Known Windows gotcha
+
+On Windows with Docker Desktop (WSL2 backend), the API container's port mapping only reliably answers on IPv4 — `[::1]:3001` (IPv6 loopback) just hangs. Chrome/Edge resolving `localhost` to `::1` first means the frontend's own calls to the API can silently hang even though `docker compose ps` says everything is healthy. The frontend already talks to `127.0.0.1:3001` instead of `localhost:3001` specifically because of this (see `frontend/lib/api.ts`) — if you ever repoint `NEXT_PUBLIC_API_URL` yourself, use an IPv4 literal, not `localhost`, on Windows.
+
 ## Architecture
 
 ```mermaid

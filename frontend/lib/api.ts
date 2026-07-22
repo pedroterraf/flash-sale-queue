@@ -1,4 +1,7 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+// 127.0.0.1, not localhost: on Windows + Docker Desktop (WSL2 backend), browsers
+// resolving "localhost" to ::1 can hang talking to the container's port mapping,
+// which only reliably answers on IPv4. See ../README.md "Known Windows gotcha".
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:3001';
 
 export interface Stats {
   saleId: string;
