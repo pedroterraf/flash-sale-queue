@@ -10,6 +10,6 @@ export class CheckoutController {
   @Post()
   @UseGuards(AdmissionGuard)
   purchase(@Req() request: Request & { admission: AdmissionClaims }) {
-    return this.checkoutService.purchase(request.admission.saleId);
+    return this.checkoutService.purchase(request.admission.saleId, request.admission.queueId);
   }
 }

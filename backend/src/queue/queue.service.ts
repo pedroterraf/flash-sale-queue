@@ -3,9 +3,9 @@ import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'crypto';
 import { RedisService } from '../redis/redis.service';
 import { ADMISSION_RATE_PER_SECOND, ADMISSION_TICKET_TTL_SECONDS } from '../config/constants';
+import { ticketKey } from '../config/keys';
 
 const queueKey = (saleId: string) => `queue:${saleId}`;
-const ticketKey = (saleId: string, queueId: string) => `ticket:${saleId}:${queueId}`;
 const admittedCounterKey = (saleId: string) => `admitted:count:${saleId}`;
 const tokenBucketKey = (saleId: string, unixSecond: number) => `admission:tokens:${saleId}:${unixSecond}`;
 

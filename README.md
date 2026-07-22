@@ -61,6 +61,8 @@ The bug: that formula bounds the *average* rate over time, but not the *burst si
 
 The fix was to move the *admission decision itself* into the Redis Lua script (`admitNext`): every poll from every client attempts to pop exactly one person off the front of the queue, gated by a per-second counter that's incremented atomically inside the same script. No matter how many clients poll concurrently, only `rate` pops can succeed in any given second — full results below.
 
+A second bug surfaced while re-verifying end-to-end after the fix above, by simply calling `/checkout` twice with the same admission ticket: **it bought two units**. The JWT signature was valid both times — a JWT alone doesn't know it's already been spent. Fixed by tying the ticket to a Redis key that `AdmissionGuard` checks on every request and `CheckoutService` deletes the moment a purchase attempt reaches a definitive outcome (bought or genuinely sold out). A transient failure — the breaker being open, say — deliberately leaves the ticket alone so the client can retry; only a real purchase attempt burns it. Verified: replaying a spent ticket now gets `401 "already used"`, and a ticket that hit a `503` during a simulated outage still works once the outage clears.
+
 ## Load test
 
 No k6/Artillery dependency — `load-test/run.js` is a ~150-line Node 18+ script (built-in `fetch`, zero deps) that measures two different things:
@@ -77,15 +79,15 @@ Real results from this repo, on a single dev machine (Docker Desktop, 300 stock 
 
 ```
 Phase 1 — join storm: 2000 concurrent /queue/join
-  p50: 48ms   p95: 123ms   p99: 159ms   errors: 0
-  sustained ~1,361 req/s
+  p50: 53ms   p95: 164ms   p99: 172ms   errors: 0
+  sustained ~1,259 req/s
 
 Phase 2 — rate enforcement: 600 users, join → poll → checkout
-  observed checkout rate: avg 20.0/s, peak 36/s   (configured cap: 20/s)
-  /checkout latency once admitted — p50: 68ms  p95: 98ms  p99: 108ms
+  observed checkout rate: avg 20.7/s, peak 40/s   (configured cap: 20/s)
+  /checkout latency once admitted — p50: 68ms  p95: 98ms  p99: 99ms
 ```
 
-The average lands exactly on the configured rate; the per-second peak (36 vs. 20) is checkout-completion jitter — some requests admitted in second *N* finish just after the second boundary — not an admission-side burst (that's exactly the bug described above, now fixed and verified).
+The average lands almost exactly on the configured rate; the per-second peak (40 vs. 20) is checkout-completion jitter — some requests admitted in second *N* finish just after the second boundary — not an admission-side burst (that's exactly the bug described above, now fixed and verified). Re-run yourself with `node load-test/run.js` — numbers will vary a little by machine, but the average should always track the configured rate closely.
 
 ## Stack
 

@@ -2,7 +2,9 @@ import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import CircuitBreaker from 'opossum';
 import { DistributedLockService } from './distributed-lock.service';
 import { InventoryService } from '../inventory/inventory.service';
+import { RedisService } from '../redis/redis.service';
 import { CHECKOUT_LOCK_TTL_MS } from '../config/constants';
+import { ticketKey } from '../config/keys';
 
 export type CheckoutResult =
   | { status: 'purchased'; unitNumber: number; reservationId: string }
@@ -23,6 +25,7 @@ export class CheckoutService {
   constructor(
     private readonly lock: DistributedLockService,
     private readonly inventory: InventoryService,
+    private readonly redis: RedisService,
   ) {
     this.breaker = new CircuitBreaker((saleId: string) => this.inventory.reserveUnit(saleId), {
       timeout: 800,
@@ -52,8 +55,16 @@ export class CheckoutService {
     };
   }
 
-  async purchase(saleId: string): Promise<CheckoutResult> {
-    return this.lock.withLock(`lock:sale:${saleId}`, CHECKOUT_LOCK_TTL_MS, async () => {
+  /**
+   * `queueId` is only used to burn the admission ticket once this attempt
+   * reaches a *definitive* outcome — purchased or genuinely sold out. A
+   * transient failure (breaker open, lock contention) leaves the ticket
+   * alone so the client can retry with the same ticket; it must never be
+   * possible to reuse a ticket to buy a second unit, though (see
+   * AdmissionGuard — this is the other half of that fix).
+   */
+  async purchase(saleId: string, queueId: string): Promise<CheckoutResult> {
+    const result = await this.lock.withLock(`lock:sale:${saleId}`, CHECKOUT_LOCK_TTL_MS, async () => {
       const stock = await this.inventory.getStock(saleId);
       if (stock <= 0) {
         return { status: 'sold_out' as const };
@@ -66,5 +77,8 @@ export class CheckoutService {
 
       return { status: 'purchased' as const, unitNumber, reservationId: reservation.reservationId };
     });
+
+    await this.redis.client.del(ticketKey(saleId, queueId));
+    return result;
   }
 }
