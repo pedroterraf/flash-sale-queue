@@ -1,106 +1,112 @@
 # flash-sale-queue
 
-A standalone, generic version of the rate-limiting core I built for a real ticketing platform (a multi-tenant SaaS handling high-demand on-sales — see [my portfolio](https://pedro-terraf-sigma.vercel.app/#projects)): a Redis-backed virtual waiting room, a single-node distributed lock protecting a stock decrement, and a fail-closed circuit breaker around a simulated downstream dependency.
+Versión standalone y genérica del núcleo de rate-limiting que construí para una plataforma de ticketing real (un SaaS multi-tenant que maneja ventas de alta demanda — ver [mi portfolio](https://pedro-terraf-sigma.vercel.app/#projects)): una sala de espera virtual con Redis, un lock distribuido de un solo nodo protegiendo el descuento de stock, y un circuit breaker fail-closed alrededor de una dependencia downstream simulada.
 
-That project's code is private client work, so nobody outside the team could ever verify the numbers I put on my CV. This repo is the opposite: it's public, it's small enough to read end-to-end, and it ships with a **real, reproducible load test** — clone it, run it, get your own numbers.
+El código de ese proyecto es trabajo privado de cliente, así que nadie fuera del equipo podía verificar los números que puse en mi CV. Este repo es lo opuesto: es público, es lo suficientemente chico para leerlo de punta a punta, y viene con un **load test real y reproducible** — clonalo, correlo, y sacá tus propios números.
 
-## Live demo
+## Demo en vivo
 
 ```bash
-docker compose up -d --build     # Redis + NestJS API on :3001
-cd frontend && npm install && npm run dev   # Next.js UI on :3000
+docker compose up -d --build     # Redis + API NestJS en :3001
+cd frontend && npm install && npm run dev   # UI Next.js en :3000
 ```
 
-Open two browser tabs on `http://localhost:3000` and hit **Join queue** on both — watch the position counter, then flip **Simulate downstream outage** and watch the circuit-breaker badge trip open and recover on its own a few seconds later.
+Abrí dos pestañas en `http://localhost:3000` y apretá **Unirme a la cola** en ambas — mirá el contador de posición, después activá **Simular caída downstream** y mirá cómo la etiqueta del circuit breaker se abre y se recupera sola unos segundos después.
 
-### Known Windows gotcha
+### Detalle de Windows
 
-On Windows with Docker Desktop (WSL2 backend), the API container's port mapping only reliably answers on IPv4 — `[::1]:3001` (IPv6 loopback) just hangs. Chrome/Edge resolving `localhost` to `::1` first means the frontend's own calls to the API can silently hang even though `docker compose ps` says everything is healthy. The frontend already talks to `127.0.0.1:3001` instead of `localhost:3001` specifically because of this (see `frontend/lib/api.ts`) — if you ever repoint `NEXT_PUBLIC_API_URL` yourself, use an IPv4 literal, not `localhost`, on Windows.
+En Windows con Docker Desktop (backend WSL2), el mapeo de puertos del contenedor de la API solo responde de forma confiable por IPv4 — `[::1]:3001` (loopback IPv6) simplemente se cuelga. Como Chrome/Edge resuelven `localhost` a `::1` primero, las llamadas del frontend a la API pueden quedarse colgadas en silencio aunque `docker compose ps` diga que todo está sano. Por eso el frontend habla con `127.0.0.1:3001` en vez de `localhost:3001` (ver `frontend/lib/api.ts`) — si en algún momento cambiás `NEXT_PUBLIC_API_URL` a mano, usá un literal IPv4, no `localhost`, en Windows.
 
-## Architecture
+## Arquitectura
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant API as NestJS API
     participant Redis
-    participant Downstream as Simulated downstream
+    participant Downstream as Downstream simulado
 
     Client->>API: POST /queue/join
     API->>Redis: ZADD queue:{sale} (FIFO)
     API-->>Client: queueId
 
-    loop every ~700ms
+    loop cada ~700ms
         Client->>API: GET /queue/status/:queueId
         API->>Redis: admitNext (Lua: token bucket + ZRANGE/ZREM)
-        Redis-->>API: popped queueId (or nil — no budget left this second)
+        Redis-->>API: queueId admitido (o nil — sin cupo ese segundo)
         API-->>Client: waiting{position} | admitted{ticket}
     end
 
-    Client->>API: POST /checkout (Bearer admission ticket)
-    API->>Redis: SET NX (distributed lock)
-    API->>Downstream: reserveUnit() — via circuit breaker
-    Downstream-->>API: ok | fails / times out
-    API->>Redis: DECR stock, INCR sold (still under the lock)
-    API->>Redis: release lock (compare-and-delete script)
-    API-->>Client: purchased{unitNumber} | sold_out | 503 (breaker open)
+    Client->>API: POST /checkout (Bearer ticket de admisión)
+    API->>Redis: SET NX (lock distribuido)
+    API->>Downstream: reserveUnit() — vía circuit breaker
+    Downstream-->>API: ok | falla / timeout
+    API->>Redis: DECR stock, INCR vendidas (todavía bajo el lock)
+    API->>Redis: libera el lock (script de compare-and-delete)
+    API-->>Client: purchased{unitNumber} | sold_out | 503 (breaker abierto)
 ```
 
-**Why a distributed lock *and* a Lua-scripted admission gate, not just Redis's own atomicity?** A single `INCR`/`DECR` is already atomic, but real checkout needs more than one Redis round-trip inside the same critical section (check stock → call the downstream dependency → decrement) — that's exactly the class of bug a bare atomic command can't prevent. The lock here is a **single-node** `SET NX PX` + compare-and-delete release script, deliberately *not* the multi-node Redlock algorithm — one Redis instance is enough to demonstrate (and load-test) the pattern honestly; Redlock solves a different problem (surviving a Redis node failure mid-lock) that a single-instance demo doesn't have.
+**¿Por qué un lock distribuido *y* un gate de admisión con Lua, y no solo la atomicidad propia de Redis?** Un `INCR`/`DECR` ya es atómico, pero el checkout real necesita más de un viaje a Redis dentro de la misma sección crítica (chequear stock → llamar a la dependencia downstream → descontar) — exactamente el tipo de bug que un comando atómico suelto no puede evitar. El lock acá es **de un solo nodo** (`SET NX PX` + script de compare-and-delete para liberar), deliberadamente *no* el algoritmo Redlock multi-nodo — una sola instancia de Redis alcanza para demostrar (y probar con load test) el patrón de forma honesta; Redlock resuelve un problema distinto (sobrevivir a la caída de un nodo de Redis en medio de un lock) que una demo de una sola instancia no tiene.
 
-## What's actually being demonstrated
+## Qué se está demostrando en realidad
 
-- **Virtual waiting room** — a Redis sorted set (`ZADD`/`ZRANK`) keeps strict join order. Admission is driven by an **atomic Lua script** (`admitNext`) that checks a per-second token-bucket key before popping the front of the queue — see "What the load test caught" below for why it has to be atomic.
-- **JWT admission tickets** — once let through, a client gets a short-lived signed ticket; `/checkout` is behind a guard that rejects anything without a valid one. The queue is meaningless if checkout is reachable directly, so this is enforced server-side, not by "being polite" in the frontend.
-- **Distributed lock** — `checkout/distributed-lock.service.ts`. `SET key token NX PX ttl` to acquire, a Lua compare-and-delete to release (so a slow request can never delete a *different* request's lock after its own expired).
-- **Fail-closed circuit breaker** ([opossum](https://github.com/nodeshift/opossum)) around the simulated downstream call in `checkout.service.ts`. Trip it live via `POST /admin/chaos` (or the UI toggle) — after a handful of failures it opens and starts rejecting fast instead of piling up timeouts on an already-unhealthy dependency, then half-opens and recovers on its own.
+- **Sala de espera virtual** — un sorted set de Redis (`ZADD`/`ZRANK`) mantiene el orden de llegada estricto. La admisión la maneja un **script Lua atómico** (`admitNext`) que chequea una key de token-bucket por segundo antes de sacar al primero de la cola — ver "Qué encontró el load test" más abajo para entender por qué tiene que ser atómico.
+- **Tickets de admisión JWT** — una vez que pasás, el cliente recibe un ticket firmado de corta duración; `/checkout` está detrás de un guard que rechaza cualquier cosa sin uno válido. La cola no sirve de nada si se puede llegar al checkout directamente, así que esto se aplica del lado del servidor, no "por las buenas" en el frontend.
+- **Lock distribuido** — `checkout/distributed-lock.service.ts`. `SET key token NX PX ttl` para adquirirlo, un compare-and-delete en Lua para liberarlo (para que un request lento nunca borre el lock de *otro* request después de que el suyo ya expiró).
+- **Circuit breaker fail-closed** ([opossum](https://github.com/nodeshift/opossum)) alrededor de la llamada downstream simulada en `checkout.service.ts`. Se dispara en vivo con `POST /admin/chaos` (o el toggle de la UI) — después de unas pocas fallas se abre y empieza a rechazar rápido en vez de acumular timeouts sobre una dependencia ya no sana, y después pasa a semiabierto y se recupera solo.
 
-## What the load test caught
+## Qué encontró el load test
 
-The first cut of the admission gate computed eligibility as `elapsedSeconds * ratePerSecond` compared against each client's queue rank — a "cumulative quota" model. It looked correct and passed manual testing. Running `load-test/run.js` against it with 600 concurrent pollers told a different story:
+La primera versión del gate de admisión calculaba la elegibilidad como `segundosTranscurridos * tasaPorSegundo` comparado contra la posición de cada cliente en la cola — un modelo de "cupo acumulado". Se veía correcto y pasó las pruebas manuales. Correr `load-test/run.js` con 600 pollers concurrentes contó otra historia:
 
-> observed checkout rate: **avg 120.0/s, peak 229/s** — against a configured cap of **20/s**.
+> tasa de checkout observada: **promedio 120.0/s, pico 229/s** — contra un límite configurado de **20/s**.
 
-The bug: that formula bounds the *average* rate over time, but not the *burst size*. If a backlog of already-eligible clients all happen to poll in the same instant (exactly what 600 concurrent users hammering the API do), they all pass the check simultaneously and get admitted in one go — the average comes out right, but the checkout endpoint still sees a spike, which defeats the entire point of the pattern.
+El bug: esa fórmula acota la tasa *promedio* en el tiempo, pero no el *tamaño de la ráfaga*. Si un montón de clientes ya elegibles pollean todos en el mismo instante (justo lo que hacen 600 usuarios concurrentes golpeando la API), todos pasan el chequeo al mismo tiempo y se admiten de una — el promedio sale bien, pero el checkout igual ve un pico, lo que arruina todo el sentido del patrón.
 
-The fix was to move the *admission decision itself* into the Redis Lua script (`admitNext`): every poll from every client attempts to pop exactly one person off the front of the queue, gated by a per-second counter that's incremented atomically inside the same script. No matter how many clients poll concurrently, only `rate` pops can succeed in any given second — full results below.
+El arreglo fue mover *la decisión de admisión en sí* al script Lua de Redis (`admitNext`): cada poll de cada cliente intenta sacar exactamente una persona del frente de la cola, limitado por un contador por segundo que se incrementa de forma atómica dentro del mismo script. No importa cuántos clientes pollean a la vez, solo pueden tener éxito `rate` extracciones en cualquier segundo dado — resultados completos más abajo.
 
-A second bug surfaced while re-verifying end-to-end after the fix above, by simply calling `/checkout` twice with the same admission ticket: **it bought two units**. The JWT signature was valid both times — a JWT alone doesn't know it's already been spent. Fixed by tying the ticket to a Redis key that `AdmissionGuard` checks on every request and `CheckoutService` deletes the moment a purchase attempt reaches a definitive outcome (bought or genuinely sold out). A transient failure — the breaker being open, say — deliberately leaves the ticket alone so the client can retry; only a real purchase attempt burns it. Verified: replaying a spent ticket now gets `401 "already used"`, and a ticket that hit a `503` during a simulated outage still works once the outage clears.
+Un segundo bug apareció al re-verificar todo de punta a punta después del arreglo anterior, simplemente llamando a `/checkout` dos veces con el mismo ticket de admisión: **compró dos unidades**. La firma del JWT era válida las dos veces — un JWT solo no sabe que ya fue usado. Se arregló atando el ticket a una key de Redis que `AdmissionGuard` chequea en cada request y que `CheckoutService` borra en el momento en que un intento de compra llega a un resultado definitivo (comprado o realmente agotado). Una falla transitoria — que el breaker esté abierto, por ejemplo — deliberadamente deja el ticket intacto para que el cliente pueda reintentar; solo un intento de compra real lo consume. Verificado: repetir un ticket ya usado ahora da `401 "ya fue usado"`, y un ticket que chocó con un `503` durante una caída simulada sigue funcionando una vez que la caída termina.
+
+Un tercer bug apareció recién al armar el gráfico de admisiones por segundo (ver más abajo): las keys del token-bucket tenían un TTL de apenas 2 segundos — pensado solo para que no se acumularan para siempre — pero eso significaba que los datos desaparecían de Redis casi al instante, antes de que nada pudiera leerlos después del hecho. La tasa de admisión seguía siendo correcta (el bug no afectaba el rate-limiting en sí, que solo necesita la key durante su propio segundo), pero el endpoint `/stats/timeseries` y el gráfico en vivo mostraban todo en cero. Se arregló subiendo ese TTL a 130 segundos, suficiente para cubrir la ventana del gráfico.
 
 ## Load test
 
-No k6/Artillery dependency — `load-test/run.js` is a ~150-line Node 18+ script (built-in `fetch`, zero deps) that measures two different things:
+Sin dependencia de k6/Artillery — `load-test/run.js` es un script de ~150 líneas en Node 18+ (`fetch` nativo, cero dependencias) que mide dos cosas distintas:
 
-1. **Can the front door absorb a stampede?** Fire thousands of concurrent `/queue/join` requests and check the API doesn't fall over.
-2. **Does the protected endpoint actually stay capped?** Poll hundreds of users to admission and checkout, then measure the *realized* checkout rate over time against the configured cap.
+1. **¿La puerta de entrada aguanta una estampida?** Dispara miles de requests concurrentes a `/queue/join` y chequea que la API no se caiga.
+2. **¿El endpoint protegido realmente se mantiene acotado?** Pollea a cientos de usuarios hasta la admisión y el checkout, y mide la tasa de checkout *real* en el tiempo contra el límite configurado.
 
 ```bash
 docker compose up -d --build
 node load-test/run.js
 ```
 
-Real results from this repo, on a single dev machine (Docker Desktop, 300 stock config raised to 1000 and rate raised to 20/s just for this run so it finishes in reasonable time — see script for env vars):
+Resultados reales de este repo, en una máquina de desarrollo (Docker Desktop, config de 300 de stock subida a 1000 y tasa subida a 20/s solo para esta corrida, para que termine en un tiempo razonable — ver el script para las variables de entorno):
 
 ```
-Phase 1 — join storm: 2000 concurrent /queue/join
-  p50: 53ms   p95: 164ms   p99: 172ms   errors: 0
-  sustained ~1,259 req/s
+Fase 1 — tormenta de joins: 2000 /queue/join concurrentes
+  p50: 53ms   p95: 164ms   p99: 172ms   errores: 0
+  ~1.259 req/s sostenidos
 
-Phase 2 — rate enforcement: 600 users, join → poll → checkout
-  observed checkout rate: avg 20.7/s, peak 40/s   (configured cap: 20/s)
-  /checkout latency once admitted — p50: 68ms  p95: 98ms  p99: 99ms
+Fase 2 — cumplimiento de la tasa: 600 usuarios, join → poll → checkout
+  tasa de checkout observada: promedio 20.7/s, pico 40/s   (límite configurado: 20/s)
+  latencia de /checkout una vez admitido — p50: 68ms  p95: 98ms  p99: 99ms
 ```
 
-The average lands almost exactly on the configured rate; the per-second peak (40 vs. 20) is checkout-completion jitter — some requests admitted in second *N* finish just after the second boundary — not an admission-side burst (that's exactly the bug described above, now fixed and verified). Re-run yourself with `node load-test/run.js` — numbers will vary a little by machine, but the average should always track the configured rate closely.
+El promedio cae casi exacto sobre la tasa configurada; el pico por segundo (40 vs. 20) es jitter de finalización del checkout — algunos requests admitidos en el segundo *N* terminan justo después del límite del segundo — no una ráfaga del lado de la admisión (ese es exactamente el bug descripto arriba, ya arreglado y verificado). Corré el test vos mismo con `node load-test/run.js` — los números van a variar un poco según la máquina, pero el promedio siempre debería acercarse bastante a la tasa configurada.
+
+## Dashboard en vivo
+
+Además del flujo de compra, la demo tiene un panel de estado en tiempo real: stock disponible con barra de progreso, profundidad de cola, admitidos, vendidas, salud de Redis, y el estado del circuit breaker con badge de color (verde = cerrado, ámbar = semiabierto, rojo = abierto). Debajo hay un **gráfico de barras de admisiones por segundo** (los últimos 30s) con una línea de referencia punteada en la tasa configurada y tooltip al pasar el mouse — construido a mano en SVG, sin librería de gráficos, leyendo directamente las mismas keys de token-bucket que usa el limitador de tasa real (no una métrica separada que se pueda desincronizar de lo que pasó de verdad).
 
 ## Stack
 
-NestJS · TypeScript · Redis (ioredis) · JWT · [opossum](https://github.com/nodeshift/opossum) circuit breaker · Next.js 15 · Tailwind · Docker Compose
+NestJS · TypeScript · Redis (ioredis) · JWT · circuit breaker [opossum](https://github.com/nodeshift/opossum) · Next.js 15 · Tailwind · Docker Compose
 
-## Project layout
+## Estructura del proyecto
 
 ```
-backend/     NestJS API — queue, checkout, inventory, circuit breaker, stats     (see backend/README.md)
-frontend/    Next.js demo UI — join flow, live stats panel, chaos toggle         (see frontend/README.md)
-load-test/   Standalone Node load-test harness + real captured results (above)  (see load-test/README.md)
+backend/     API NestJS — queue, checkout, inventory, circuit breaker, stats     (ver backend/README.md)
+frontend/    UI de demo en Next.js — flujo de compra, panel de stats, toggle de caos  (ver frontend/README.md)
+load-test/   Harness de load test en Node + resultados reales capturados (arriba)     (ver load-test/README.md)
 ```

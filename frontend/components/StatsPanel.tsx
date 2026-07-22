@@ -9,6 +9,12 @@ const breakerColor: Record<Stats['breaker']['state'], string> = {
   open: 'bg-rose-500/20 text-rose-300',
 };
 
+const breakerLabel: Record<Stats['breaker']['state'], string> = {
+  closed: 'cerrado',
+  'half-open': 'semiabierto',
+  open: 'abierto',
+};
+
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/5 p-4">
@@ -28,7 +34,7 @@ export default function StatsPanel() {
         const data = await api.stats(SALE_ID);
         if (!cancelled) setStats(data);
       } catch {
-        // API might be down/starting — the panel just keeps showing the last known state.
+        // si la API está caída o iniciando, el panel sigue mostrando el último estado conocido
       }
     };
     tick();
@@ -40,27 +46,45 @@ export default function StatsPanel() {
   }, []);
 
   if (!stats) {
-    return <p className="text-sm text-white/40">Connecting to the API…</p>;
+    return <p className="text-sm text-white/40">Conectando con la API…</p>;
   }
+
+  const stockPct = stats.totalStock > 0 ? Math.round((stats.stock / stats.totalStock) * 100) : 0;
 
   return (
     <div>
       <div className="mb-4 flex items-center justify-between">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-white/60">
-          Live system state
+          Estado del sistema en vivo
         </h3>
-        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${breakerColor[stats.breaker.state]}`}>
-          circuit breaker: {stats.breaker.state}
+        <span
+          className={`rounded-full px-3 py-1 text-xs font-semibold ${breakerColor[stats.breaker.state]}`}
+        >
+          circuit breaker: {breakerLabel[stats.breaker.state]}
         </span>
       </div>
 
+      <div className="mb-4">
+        <div className="mb-1 flex items-center justify-between text-xs text-white/50">
+          <span>Stock disponible</span>
+          <span>
+            {stats.stock} / {stats.totalStock}
+          </span>
+        </div>
+        <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-400 transition-[width] duration-500"
+            style={{ width: `${stockPct}%` }}
+          />
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <Stat label="In queue" value={stats.queueDepth} />
-        <Stat label="Admitted" value={stats.admittedCount} />
-        <Stat label="Stock left" value={`${stats.stock} / ${stats.totalStock}`} />
-        <Stat label="Sold" value={stats.soldCount} />
-        <Stat label="Admission rate" value={`${stats.admissionRatePerSecond}/s`} />
-        <Stat label="Redis" value={stats.redisHealthy ? 'healthy' : 'down'} />
+        <Stat label="En cola" value={stats.queueDepth} />
+        <Stat label="Admitidos" value={stats.admittedCount} />
+        <Stat label="Vendidas" value={stats.soldCount} />
+        <Stat label="Tasa de admisión" value={`${stats.admissionRatePerSecond}/s`} />
+        <Stat label="Redis" value={stats.redisHealthy ? 'sano' : 'caído'} />
       </div>
     </div>
   );

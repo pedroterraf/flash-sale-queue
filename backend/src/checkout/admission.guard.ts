@@ -29,7 +29,7 @@ export class AdmissionGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<Request>();
     const header = request.headers.authorization;
     if (!header?.startsWith('Bearer ')) {
-      throw new UnauthorizedException('Missing admission ticket — join the queue first.');
+      throw new UnauthorizedException('Falta el ticket de admisión — unite a la cola primero.');
     }
 
     const token = header.slice('Bearer '.length);
@@ -37,12 +37,12 @@ export class AdmissionGuard implements CanActivate {
     try {
       claims = await this.jwt.verifyAsync<AdmissionClaims>(token);
     } catch {
-      throw new UnauthorizedException('Admission ticket is invalid or expired.');
+      throw new UnauthorizedException('El ticket de admisión es inválido o expiró.');
     }
 
     const stillLive = await this.redis.client.get(ticketKey(claims.saleId, claims.queueId));
     if (stillLive !== token) {
-      throw new UnauthorizedException('Admission ticket was already used.');
+      throw new UnauthorizedException('El ticket de admisión ya fue usado.');
     }
 
     (request as Request & { admission: AdmissionClaims }).admission = claims;

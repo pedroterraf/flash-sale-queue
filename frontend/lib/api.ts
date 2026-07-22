@@ -32,6 +32,12 @@ export type CheckoutResponse =
   | { status: 'sold_out' }
   | { message: string; error: string; statusCode: number };
 
+export interface Timeseries {
+  saleId: string;
+  ratePerSecond: number;
+  buckets: { second: number; count: number }[];
+}
+
 async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
@@ -57,6 +63,11 @@ export const api = {
 
   stats: (saleId: string) =>
     fetch(`${API_URL}/stats?saleId=${saleId}`).then((res) => json<Stats>(res)),
+
+  timeseries: (saleId: string, seconds: number) =>
+    fetch(`${API_URL}/stats/timeseries?saleId=${saleId}&seconds=${seconds}`).then((res) =>
+      json<Timeseries>(res),
+    ),
 
   setChaos: (enabled: boolean) =>
     fetch(`${API_URL}/admin/chaos`, {

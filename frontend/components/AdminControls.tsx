@@ -24,12 +24,12 @@ export default function AdminControls() {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
       <h3 className="mb-1 text-sm font-semibold uppercase tracking-wide text-white/60">
-        Demo controls
+        Controles de la demo
       </h3>
       <p className="mb-4 text-xs text-white/40">
-        Flip &ldquo;simulate outage&rdquo; to make the downstream dependency start failing and
-        watch the circuit breaker above trip open — checkout starts failing fast instead of
-        hanging, and recovers on its own a few seconds after you turn it back off.
+        Activá &ldquo;simular caída&rdquo; para que la dependencia downstream empiece a fallar y
+        mirá cómo el circuit breaker de arriba se abre — el checkout empieza a fallar rápido en
+        vez de colgarse, y se recupera solo unos segundos después de que lo apagues.
       </p>
       <div className="flex flex-wrap gap-3">
         <button
@@ -39,14 +39,14 @@ export default function AdminControls() {
             chaos ? 'bg-rose-500/20 text-rose-300' : 'bg-white/10 text-white/80 hover:bg-white/20'
           }`}
         >
-          {chaos ? '⏹ Stop simulated outage' : '⚡ Simulate downstream outage'}
+          {chaos ? '⏹ Parar la caída simulada' : '⚡ Simular caída downstream'}
         </button>
         <button
           onClick={reset}
           disabled={busy}
           className="rounded-lg bg-white/10 px-4 py-2 text-sm font-semibold text-white/80 transition hover:bg-white/20 disabled:opacity-50"
         >
-          ↺ Reset demo
+          ↺ Reiniciar demo
         </button>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import QueueFlow from '@/components/QueueFlow';
 import StatsPanel from '@/components/StatsPanel';
 import AdminControls from '@/components/AdminControls';
+import AdmissionRateChart from '@/components/AdmissionRateChart';
 
 export default function Home() {
   return (
@@ -10,13 +11,14 @@ export default function Home() {
           flash-sale-queue
         </p>
         <h1 className="mt-2 text-3xl font-bold sm:text-4xl">
-          A live demo of a Redis-backed virtual waiting room
+          Demo en vivo de una sala de espera virtual con Redis
         </h1>
         <p className="mx-auto mt-3 max-w-2xl text-white/60">
-          Standalone, generic version of the rate-limiting pattern I built for a real ticketing
-          platform: a FIFO admission queue, a single-node distributed lock protecting the stock
-          decrement, and a fail-closed circuit breaker around the downstream dependency. Open two
-          tabs and hit &ldquo;Join queue&rdquo; on both to see it play out.
+          Versión standalone y genérica del patrón de rate-limiting que construí para una
+          plataforma de ticketing real: una cola de admisión FIFO, un lock distribuido de un solo
+          nodo protegiendo el descuento de stock, y un circuit breaker fail-closed alrededor de la
+          dependencia downstream. Abrí dos pestañas y apretá &ldquo;Unirme a la cola&rdquo; en
+          ambas para verlo en acción.
         </p>
       </header>
 
@@ -28,6 +30,10 @@ export default function Home() {
           </div>
           <AdminControls />
         </div>
+      </div>
+
+      <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
+        <AdmissionRateChart />
       </div>
     </main>
   );

@@ -2,12 +2,15 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'crypto';
 import { RedisService } from '../redis/redis.service';
-import { ADMISSION_RATE_PER_SECOND, ADMISSION_TICKET_TTL_SECONDS } from '../config/constants';
-import { ticketKey } from '../config/keys';
+import {
+  ADMISSION_RATE_PER_SECOND,
+  ADMISSION_TICKET_TTL_SECONDS,
+  ADMISSION_BUCKET_HISTORY_SECONDS,
+} from '../config/constants';
+import { ticketKey, tokenBucketKey } from '../config/keys';
 
 const queueKey = (saleId: string) => `queue:${saleId}`;
 const admittedCounterKey = (saleId: string) => `admitted:count:${saleId}`;
-const tokenBucketKey = (saleId: string, unixSecond: number) => `admission:tokens:${saleId}:${unixSecond}`;
 
 export type JoinResult = { queueId: string; saleId: string };
 
@@ -58,7 +61,7 @@ export class QueueService {
       queueKey(saleId),
       tokenBucketKey(saleId, unixSecond),
       ADMISSION_RATE_PER_SECOND,
-      2,
+      ADMISSION_BUCKET_HISTORY_SECONDS,
     );
 
     if (admittedQueueId) {
@@ -88,7 +91,7 @@ export class QueueService {
 
     const rank = await this.redis.client.zrank(queueKey(saleId), queueId);
     if (rank === null) {
-      throw new NotFoundException('Unknown queue ticket — join the queue first.');
+      throw new NotFoundException('Ticket de cola desconocido — unite a la cola primero.');
     }
 
     const queueDepth = await this.getQueueDepth(saleId);

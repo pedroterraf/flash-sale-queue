@@ -2,14 +2,14 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Flash-Sale Queue — live demo',
+  title: 'Flash-Sale Queue — demo en vivo',
   description:
-    'A Redis-backed virtual waiting room, distributed lock and fail-closed circuit breaker, demoed live.',
+    'Sala de espera virtual con Redis, lock distribuido y circuit breaker fail-closed, demostrado en vivo.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="es">
       <body>{children}</body>
     </html>
   );

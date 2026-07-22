@@ -37,7 +37,7 @@ export class CheckoutService {
     });
     this.breaker.fallback(() => {
       throw new ServiceUnavailableException(
-        'High demand — checkout is temporarily paused to protect the system. Try again shortly.',
+        'Alta demanda — el checkout está pausado momentáneamente para proteger el sistema. Probá de nuevo en unos segundos.',
       );
     });
   }

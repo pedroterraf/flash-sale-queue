@@ -1,48 +1,48 @@
 # backend
 
-NestJS API. Five things worth understanding, in the order a request actually flows through them.
+API NestJS. Cinco cosas que vale la pena entender, en el orden en que un request realmente pasa por ellas.
 
-## 1. `redis/` — the connection, and the two Lua scripts
+## 1. `redis/` — la conexión, y los dos scripts Lua
 
-`redis.service.ts` holds the single `ioredis` client the whole app shares, plus two atomic commands defined on it via `client.defineCommand(...)`. Both exist because a plain Redis command isn't enough on its own:
+`redis.service.ts` tiene el único cliente `ioredis` que comparte toda la app, más dos comandos atómicos definidos sobre él vía `client.defineCommand(...)`. Los dos existen porque un comando de Redis simple no alcanza por sí solo:
 
-- **`releaseLock(key, token)`** — `GET key == token ? DEL key : no-op`. A lock release must never blindly `DEL`; if this request's lock already expired and someone else acquired it, a blind delete would release *their* lock instead. The compare-and-delete has to happen as one atomic step, hence Lua instead of a `GET` followed by a separate `DEL` from Node.
-- **`admitNext(queueKey, bucketKey, rate, ttl)`** — the admission gate itself. See `queue/` below; this is the fix for the burst bug described in the root README.
+- **`releaseLock(key, token)`** — `GET key == token ? DEL key : no-op`. Liberar un lock nunca puede hacer un `DEL` a ciegas; si el lock de este request ya expiró y otro lo agarró, un delete ciego liberaría el lock *de otro*. El compare-and-delete tiene que pasar como un solo paso atómico, por eso Lua en vez de un `GET` seguido de un `DEL` separado desde Node.
+- **`admitNext(queueKey, bucketKey, rate, ttl)`** — el gate de admisión en sí. Ver `queue/` más abajo; este es el arreglo del bug de ráfagas descripto en el README raíz.
 
-`isHealthy()` does a `PING` with a short timeout — used by `/stats` to report Redis health, and it's what would let a caller fail closed if Redis itself is unreachable.
+`isHealthy()` hace un `PING` con timeout corto — lo usa `/stats` para reportar la salud de Redis, y es lo que permitiría a quien llame fallar cerrado si Redis mismo no responde.
 
-## 2. `queue/` — the waiting room
+## 2. `queue/` — la sala de espera
 
-`queue.service.ts` is the FIFO admission gate:
+`queue.service.ts` es el gate de admisión FIFO:
 
-- `join()` — `ZADD queue:{saleId} <timestamp> <queueId>`. A sorted set keyed by join time gives strict FIFO order and O(log n) rank lookups for free.
-- `status()` — called on every client poll (every ~700ms from the frontend). It does **not** trust "my rank looks eligible, let me in" — instead it calls `admitNext` (the Lua script), which is the only thing allowed to pop someone off the queue, gated by a per-second token-bucket key (`admission:tokens:{saleId}:{unixSecond}`, capped at `rate`, 2s TTL). Whoever gets popped — which may not be the caller who triggered it — gets a JWT written to `ticket:{saleId}:{queueId}` immediately. The caller then just checks whether *their own* ticket key exists yet.
+- `join()` — `ZADD queue:{saleId} <timestamp> <queueId>`. Un sorted set indexado por el momento de llegada da orden FIFO estricto y consultas de posición O(log n) gratis.
+- `status()` — se llama en cada poll del cliente (cada ~700ms desde el frontend). **No** confía en "mi posición parece elegible, dejame entrar" — en cambio llama a `admitNext` (el script Lua), que es lo único autorizado a sacar a alguien de la cola, limitado por una key de token-bucket por segundo (`admission:tokens:{saleId}:{unixSecond}`, tope en `rate`, TTL de 130s). A quien sea que se saque —que puede no ser quien disparó la llamada— se le escribe un JWT en `ticket:{saleId}:{queueId}` de inmediato. Quien llamó simplemente chequea después si *su propia* key de ticket ya existe.
 
-Why drive it from polls instead of a cron/interval? No background worker to keep alive, no "what if the worker dies" failure mode, and it naturally scales down to zero load when nobody's polling — the tradeoff is that admission only progresses as fast as someone somewhere is polling, which is a non-issue in practice since every waiting client polls continuously.
+¿Por qué manejarlo con polls en vez de un cron/interval? No hay worker en segundo plano que mantener vivo, no hay modo de falla "qué pasa si el worker se muere", y escala solo a cero carga cuando nadie está polleando — la contra es que la admisión solo avanza tan rápido como alguien, en algún lado, esté polleando, lo cual en la práctica no es un problema porque cada cliente esperando pollea todo el tiempo.
 
-## 3. `checkout/` — the part that's actually rate-limited
+## 3. `checkout/` — la parte que realmente tiene rate-limit
 
-This is the endpoint the whole queue exists to protect, so getting in requires an admission ticket (`admission.guard.ts`), and the ticket only survives one use:
+Este es el endpoint que toda la cola existe para proteger, así que entrar requiere un ticket de admisión (`admission.guard.ts`), y el ticket solo sobrevive un uso:
 
-- **`AdmissionGuard`** checks two things, not one: the JWT signature (stateless, fast to verify) *and* that `ticket:{saleId}:{queueId}` still exists in Redis (stateful, revocable). A valid signature alone isn't enough — see the README's "second bug" for why.
-- **`DistributedLockService`** — `SET lock:sale:{saleId} <token> NX PX <ttl>` to acquire, the `releaseLock` script to release. Deliberately single-node, not the multi-node Redlock algorithm (that solves surviving a Redis node dying mid-lock, a different problem than this demo has with one Redis instance).
-- **`CheckoutService.purchase()`** runs entirely inside `lock.withLock(...)`: check stock, call the simulated downstream through the circuit breaker, decrement stock. Once that resolves — bought or genuinely sold out — the ticket is deleted. If the lock body *throws* (breaker open, downstream timeout), the `del` line is never reached, so a transient failure doesn't burn the client's one shot.
+- **`AdmissionGuard`** chequea dos cosas, no una: la firma del JWT (sin estado, rápida de verificar) *y* que `ticket:{saleId}:{queueId}` todavía exista en Redis (con estado, revocable). Una firma válida sola no alcanza — ver el "segundo bug" del README para entender por qué.
+- **`DistributedLockService`** — `SET lock:sale:{saleId} <token> NX PX <ttl>` para adquirir, el script `releaseLock` para liberar. Deliberadamente de un solo nodo, no el algoritmo Redlock multi-nodo (eso resuelve sobrevivir a que un nodo de Redis se muera en medio de un lock, un problema distinto al que tiene esta demo con una sola instancia).
+- **`CheckoutService.purchase()`** corre entera dentro de `lock.withLock(...)`: chequea stock, llama al downstream simulado a través del circuit breaker, descuenta stock. Una vez que eso resuelve —comprado o realmente agotado— se borra el ticket. Si el cuerpo del lock *lanza una excepción* (breaker abierto, timeout del downstream), la línea del `del` nunca se ejecuta, así que una falla transitoria no le quema el único intento al cliente.
 
-## 4. `inventory/` — the thing being protected
+## 4. `inventory/` — lo que se está protegiendo
 
-Stands in for whatever a real checkout calls that has actual latency and actual failure modes (payment auth, a fulfillment system, ...). `reserveUnit()` sleeps 30–100ms and, when `chaos:enabled` is set, always throws — that's the whole "simulated outage" the demo UI toggles. `decrementStock()` is the only part that touches real state, and it only ever runs inside the checkout lock.
+Representa lo que llamaría un checkout real con latencia y modos de falla de verdad (autorización de pago, un sistema de fulfillment, ...). `reserveUnit()` duerme 30–100ms y, cuando `chaos:enabled` está activo, siempre lanza una excepción — eso es toda la "caída simulada" que activa la UI de la demo. `decrementStock()` es la única parte que toca estado real, y solo corre dentro del lock del checkout.
 
-## 5. `stats/` — read-only + demo controls
+## 5. `stats/` — solo lectura + controles de demo
 
-`GET /stats` aggregates queue depth, admitted/sold counts, Redis health, and `CheckoutService.getBreakerStats()` (opossum's own counters — `fires`, `failures`, `rejects`, latency percentiles). `POST /admin/chaos` flips the failure simulation; `POST /admin/reset` wipes every key for a sale so you can re-run the demo without restarting the containers.
+`GET /stats` agrega profundidad de cola, contadores de admitidos/vendidas, salud de Redis, y `CheckoutService.getBreakerStats()` (los contadores propios de opossum — `fires`, `failures`, `rejects`, percentiles de latencia). `GET /stats/timeseries` devuelve las cuentas de admisión por segundo de los últimos N segundos, leyendo directamente las mismas keys de token-bucket que usa `admitNext` — es lo que alimenta el gráfico del frontend, sin un pipeline de métricas separado que se pueda desincronizar. `POST /admin/chaos` prende o apaga la simulación de fallas; `POST /admin/reset` borra todas las keys de una venta para poder repetir la demo sin reiniciar los contenedores.
 
 ## Config
 
-Everything tunable lives in `src/config/constants.ts`, read from env vars with sane defaults (`docker-compose.yml` sets `TOTAL_STOCK=300`, `ADMISSION_RATE_PER_SECOND=8` for the live demo — the load test in `../load-test/` temporarily overrides these to finish in a reasonable time; see that folder's README).
+Todo lo configurable vive en `src/config/constants.ts`, leído de variables de entorno con valores por defecto razonables (`docker-compose.yml` pone `TOTAL_STOCK=300`, `ADMISSION_RATE_PER_SECOND=8` para la demo en vivo — el load test en `../load-test/` los pisa temporalmente para terminar en un tiempo razonable; ver el README de esa carpeta).
 
-## Running it alone (no Docker)
+## Correrlo solo (sin Docker)
 
 ```bash
 npm install
-REDIS_URL=redis://localhost:6379 npm run start:dev   # needs a Redis reachable at that URL
+REDIS_URL=redis://localhost:6379 npm run start:dev   # necesita un Redis alcanzable en esa URL
 ```

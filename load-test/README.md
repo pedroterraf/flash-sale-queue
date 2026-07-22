@@ -1,36 +1,36 @@
 # load-test
 
-One file, `run.js` — plain Node 18+ (`fetch`, `performance.now()`, nothing else), no k6/Artillery/autocannon dependency to install. Run it against a live stack:
+Un solo archivo, `run.js` — Node 18+ puro (`fetch`, `performance.now()`, nada más), sin dependencia de k6/Artillery/autocannon que instalar. Se corre contra un stack levantado:
 
 ```bash
-docker compose up -d --build   # from the repo root
+docker compose up -d --build   # desde la raíz del repo
 node load-test/run.js
 ```
 
-## What it actually measures, and why two separate phases
+## Qué mide en realidad, y por qué dos fases separadas
 
-**Phase 1 — join storm.** Fires `JOIN_STORM_SIZE` (default 2000) `/queue/join` requests in batches of 100 and measures latency percentiles + sustained req/s. This is the "can the front door take a real stampede" question — `/queue/join` is a single `ZADD`, so it should stay fast even under heavy concurrency, and this phase proves it rather than assuming it.
+**Fase 1 — tormenta de joins.** Dispara `JOIN_STORM_SIZE` (2000 por defecto) requests a `/queue/join` en lotes de 100 y mide percentiles de latencia + req/s sostenidos. Esta es la pregunta de "¿la puerta de entrada aguanta una estampida real?" — `/queue/join` es un `ZADD` simple, así que debería mantenerse rápido incluso bajo concurrencia pesada, y esta fase lo prueba en vez de asumirlo.
 
-**Phase 2 — rate enforcement.** Joins `RATE_TEST_USERS` (default 600) users, then polls every single one of them to admission and immediately checks out, recording the wall-clock timestamp each checkout *completes*. Those timestamps get bucketed by second-since-first-checkout, and the average/peak per-second count is compared against the configured `ADMISSION_RATE_PER_SECOND`. This is the actual point of the whole project: proving the protected endpoint never sees more traffic than the configured cap, regardless of how many clients are hammering the queue.
+**Fase 2 — cumplimiento de la tasa.** Une a `RATE_TEST_USERS` (600 por defecto) usuarios, después pollea a cada uno hasta la admisión y hace el checkout de inmediato, registrando el timestamp real de cuándo *termina* cada checkout. Esos timestamps se agrupan por segundo desde el primer checkout, y la cuenta promedio/pico por segundo se compara contra el `ADMISSION_RATE_PER_SECOND` configurado. Este es el punto real de todo el proyecto: probar que el endpoint protegido nunca ve más tráfico que el límite configurado, sin importar cuántos clientes estén golpeando la cola.
 
-Why not just one giant phase? Because "can the front door take load" and "does the rate cap actually hold" are different claims that need different measurements — conflating them into one number would hide a regression in either one.
+¿Por qué no una sola fase gigante? Porque "¿la puerta de entrada aguanta carga?" y "¿el límite de tasa realmente se sostiene?" son afirmaciones distintas que necesitan mediciones distintas — mezclarlas en un solo número escondería una regresión en cualquiera de las dos.
 
-## Why results are bucketed by *completion* time, not admission time
+## Por qué los resultados se agrupan por momento de *finalización*, no de admisión
 
-The Lua-scripted admission gate (see `../backend/README.md`) guarantees at most `rate` **admissions** per second. This script measures checkout **completions**, which happen slightly after admission (network round-trip + the checkout's own ~30-100ms simulated downstream latency). A few completions from second *N*'s admissions landing just after the second boundary is expected jitter, not a rate-limiting bug — that distinction is spelled out in the root README's load-test section, because it's the kind of thing that looks like a bug at first glance and isn't.
+El gate de admisión con script Lua (ver `../backend/README.md`) garantiza como máximo `rate` **admisiones** por segundo. Este script mide **finalizaciones** de checkout, que pasan un poco después de la admisión (viaje de red + la latencia downstream simulada de ~30-100ms del propio checkout). Que algunas finalizaciones de las admisiones del segundo *N* caigan justo después del límite del segundo es jitter esperado, no un bug de rate-limiting — esa distinción está explicada en la sección de load test del README raíz, porque es el tipo de cosa que a primera vista parece un bug y no lo es.
 
-## Two things this script works around that are about the test client, not the server
+## Dos cosas que este script esquiva que son del cliente de test, no del servidor
 
-- **`API_URL` defaults to `127.0.0.1`, not `localhost`.** On at least one dev machine, Node's `fetch` resolved `localhost` to `::1` first and got connection resets talking to a Docker port mapping that wasn't answering on IPv6 — `curl` didn't hit this (different resolution order), which is what made it confusing to debug. If you see `ECONNRESET` immediately on the very first request, try `API_URL=http://127.0.0.1:3001 node load-test/run.js` explicitly.
-- **Joins are batched (`batchSize`, default 100), not fired as one `Promise.all` of 2000.** Opening thousands of sockets from a single Node process in one tick trips client-side connection limits that have nothing to do with the server's real capacity. A handful of dropped connections from this artifact are caught and counted in `droppedClientConnections` in the summary rather than crashing the run — real load-test tools tolerate a few failed probes the same way.
+- **`API_URL` usa `127.0.0.1` por defecto, no `localhost`.** En al menos una máquina de desarrollo, el `fetch` de Node resolvió `localhost` a `::1` primero y tuvo resets de conexión hablando con un mapeo de puertos de Docker que no respondía por IPv6 — `curl` no chocaba con esto (orden de resolución distinto), lo que hizo que fuera confuso de debuggear. Si ves `ECONNRESET` de inmediato en el primer request, probá `API_URL=http://127.0.0.1:3001 node load-test/run.js` explícitamente.
+- **Los joins van en lotes (`batchSize`, 100 por defecto), no como un solo `Promise.all` de 2000.** Abrir miles de sockets desde un solo proceso de Node en un tick dispara límites de conexión del lado del cliente que no tienen nada que ver con la capacidad real del servidor. Un puñado de conexiones perdidas por este artefacto se capturan y se cuentan en `droppedClientConnections` en el resumen en vez de tirar abajo la corrida — las herramientas de load test reales toleran así unas pocas pruebas fallidas.
 
-## Env vars
+## Variables de entorno
 
-| Var | Default | |
+| Variable | Default | |
 |---|---|---|
 | `API_URL` | `http://127.0.0.1:3001` | |
-| `SALE_ID` | `DROP-001` | must match what the API is configured with |
-| `JOIN_STORM_SIZE` | `2000` | phase 1 size |
-| `RATE_TEST_USERS` | `600` | phase 2 size — bigger takes proportionally longer at a low `ADMISSION_RATE_PER_SECOND` |
+| `SALE_ID` | `DROP-001` | tiene que coincidir con lo que tenga configurado la API |
+| `JOIN_STORM_SIZE` | `2000` | tamaño de la fase 1 |
+| `RATE_TEST_USERS` | `600` | tamaño de la fase 2 — uno más grande tarda proporcionalmente más con un `ADMISSION_RATE_PER_SECOND` bajo |
 
-The numbers quoted in the root README's "Load test" section were captured with the API's `ADMISSION_RATE_PER_SECOND` and `TOTAL_STOCK` temporarily raised (20/s, 1000 units) specifically so phase 2 finishes in under a minute — at the live demo's default of 8/s, admitting 600 people takes 75 seconds just by definition of the rate. Bump those two env vars in `docker-compose.yml`, rebuild, run the test, then revert before using the live demo again (or just run with a smaller `RATE_TEST_USERS`).
+Los números citados en la sección "Load test" del README raíz se capturaron con el `ADMISSION_RATE_PER_SECOND` y el `TOTAL_STOCK` de la API subidos temporalmente (20/s, 1000 unidades) específicamente para que la fase 2 termine en menos de un minuto — con el default de la demo en vivo de 8/s, admitir a 600 personas tarda 75 segundos solo por definición de la tasa. Subí esas dos variables en `docker-compose.yml`, reconstruí, corré el test, y después volvé a los valores originales antes de usar la demo en vivo de nuevo (o simplemente corré con un `RATE_TEST_USERS` más chico).
