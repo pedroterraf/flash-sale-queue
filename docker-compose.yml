@@ -1,0 +1,24 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  api:
+    build: ./backend
+    ports:
+      - "3001:3001"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=dev-secret-change-me
+      - TOTAL_STOCK=300
+      - ADMISSION_RATE_PER_SECOND=8
+      - ADMISSION_TICKET_TTL_SECONDS=120
+    depends_on:
+      redis:
+        condition: service_healthy
