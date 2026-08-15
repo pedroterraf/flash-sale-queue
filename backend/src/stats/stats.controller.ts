@@ -21,6 +21,11 @@ export class StatsController {
     private readonly redis: RedisService,
   ) {}
 
+  @Get('health')
+  health() {
+    return { ok: true };
+  }
+
   @Get('stats')
   async stats(@Query('saleId') saleId = DEFAULT_SALE_ID) {
     const [queueDepth, admittedCount, stock, soldCount, chaos, redisHealthy] = await Promise.all([

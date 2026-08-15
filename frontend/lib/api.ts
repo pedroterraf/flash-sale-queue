@@ -3,6 +3,23 @@
 // which only reliably answers on IPv4. See ../README.md "Known Windows gotcha".
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:3001';
 
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+export const isRetryableCheckout = (error: unknown): boolean => {
+  if (error instanceof ApiError) {
+    return error.status === 0 || error.status === 503 || error.status >= 500;
+  }
+  return true;
+};
+
 export interface Stats {
   saleId: string;
   queueDepth: number;
@@ -29,8 +46,7 @@ export type StatusResponse =
 
 export type CheckoutResponse =
   | { status: 'purchased'; unitNumber: number; reservationId: string }
-  | { status: 'sold_out' }
-  | { message: string; error: string; statusCode: number };
+  | { status: 'sold_out' };
 
 export interface Timeseries {
   saleId: string;
@@ -38,47 +54,75 @@ export interface Timeseries {
   buckets: { second: number; count: number }[];
 }
 
-async function json<T>(res: Response): Promise<T> {
+async function fetchSafe(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch {
+    throw new ApiError(
+      'No se pudo conectar con la API. Si es la primera carga, el server gratuito puede tardar ~30s en despertar.',
+      0,
+    );
+  }
+}
+
+async function readJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
+}
+
+async function parseOk<T>(res: Response): Promise<T> {
+  const body = await readJson<T & { message?: string }>(res);
+  if (!res.ok) {
+    throw new ApiError(body.message ?? `Error ${res.status}`, res.status);
+  }
+  return body;
 }
 
 export const api = {
   join: (saleId: string) =>
-    fetch(`${API_URL}/queue/join`, {
+    fetchSafe(`${API_URL}/queue/join`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ saleId }),
-    }).then((res) => json<{ queueId: string; saleId: string }>(res)),
+    }).then((res) => parseOk<{ queueId: string; saleId: string }>(res)),
 
   status: (saleId: string, queueId: string) =>
-    fetch(`${API_URL}/queue/status/${queueId}?saleId=${saleId}`).then((res) =>
-      json<StatusResponse>(res),
+    fetchSafe(`${API_URL}/queue/status/${queueId}?saleId=${saleId}`).then((res) =>
+      parseOk<StatusResponse>(res),
     ),
 
-  checkout: (ticket: string) =>
-    fetch(`${API_URL}/checkout`, {
+  checkout: async (ticket: string): Promise<CheckoutResponse> => {
+    const res = await fetchSafe(`${API_URL}/checkout`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${ticket}` },
-    }).then(async (res) => ({ httpStatus: res.status, body: await json<CheckoutResponse>(res) })),
+    });
+    const body = await readJson<CheckoutResponse | { message?: string }>(res);
+    if (!res.ok) {
+      throw new ApiError(
+        'message' in body && typeof body.message === 'string' ? body.message : 'Falló el checkout',
+        res.status,
+      );
+    }
+    return body as CheckoutResponse;
+  },
 
   stats: (saleId: string) =>
-    fetch(`${API_URL}/stats?saleId=${saleId}`).then((res) => json<Stats>(res)),
+    fetchSafe(`${API_URL}/stats?saleId=${saleId}`).then((res) => parseOk<Stats>(res)),
 
   timeseries: (saleId: string, seconds: number) =>
-    fetch(`${API_URL}/stats/timeseries?saleId=${saleId}&seconds=${seconds}`).then((res) =>
-      json<Timeseries>(res),
+    fetchSafe(`${API_URL}/stats/timeseries?saleId=${saleId}&seconds=${seconds}`).then((res) =>
+      parseOk<Timeseries>(res),
     ),
 
   setChaos: (enabled: boolean) =>
-    fetch(`${API_URL}/admin/chaos`, {
+    fetchSafe(`${API_URL}/admin/chaos`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
-    }).then((res) => json<{ chaosEnabled: boolean }>(res)),
+    }).then((res) => parseOk<{ chaosEnabled: boolean }>(res)),
 
   reset: (saleId: string) =>
-    fetch(`${API_URL}/admin/reset?saleId=${saleId}`, { method: 'POST' }).then((res) =>
-      json<{ reset: boolean; saleId: string }>(res),
+    fetchSafe(`${API_URL}/admin/reset?saleId=${saleId}`, { method: 'POST' }).then((res) =>
+      parseOk<{ reset: boolean; saleId: string }>(res),
     ),
 };
 

@@ -5,4 +5,24 @@
 body {
   background: #0a0b14;
   color: #eef1ff;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+::selection {
+  background: rgba(232, 121, 249, 0.35);
+}
+
+:focus-visible {
+  outline: 2px solid #e879f9;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

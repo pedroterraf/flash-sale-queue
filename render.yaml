@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: flash-sale-queue-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    envVars:
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: TOTAL_STOCK
+        value: '300'
+      - key: ADMISSION_RATE_PER_SECOND
+        value: '8'
+      - key: ADMISSION_TICKET_TTL_SECONDS
+        value: '120'
